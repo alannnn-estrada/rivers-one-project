@@ -14,7 +14,7 @@ from sympy.parsing.sympy_parser import (
 
 
 class FormulaError(ValueError):
-    """Raised when an expression cannot be parsed or evaluated."""
+    """Se lanza cuando una expresión no puede ser analizada o evaluada."""
 
 
 @dataclass
@@ -55,9 +55,10 @@ class SignChangeSearchResult:
 
 
 def compile_function(expression: str) -> Callable[[float], float]:
-    """Compile a user expression in variable x into a numeric callable."""
+    """Compila una expresión de usuario en la variable x a una función numérica."""
     x = Symbol("x")
 
+    # Preparar transformaciones para el parser (p. ej. multiplicación implícita y manejo de '^')
     transformations = standard_transformations + (
         implicit_multiplication_application,
         convert_xor,
@@ -66,7 +67,7 @@ def compile_function(expression: str) -> Callable[[float], float]:
     try:
         parsed = parse_expr(expression, transformations=transformations)
         numeric_fn = lambdify(x, parsed, modules=["numpy"])
-    except Exception as exc:  # pragma: no cover - defensive parse guard
+    except Exception as exc:  # pragma: no cover - guardia defensiva al parsear
         raise FormulaError(f"No se pudo interpretar la formula: {exc}") from exc
 
     def safe_eval(value: float) -> float:
@@ -78,7 +79,7 @@ def compile_function(expression: str) -> Callable[[float], float]:
             return value_as_float
         except FormulaError:
             raise
-        except Exception as exc:  # pragma: no cover - defensive eval guard
+        except Exception as exc:  # pragma: no cover - guardia defensiva al evaluar
             raise FormulaError(f"Error evaluando la formula en x={value}: {exc}") from exc
 
     return safe_eval
@@ -93,7 +94,7 @@ def find_first_sign_change(
     proposed_number: float,
     max_tabulations: int,
 ) -> SignChangeSearchResult:
-    """Find the first sign change by tabulating from a proposed x to both sides."""
+    """Encuentra el primer cambio de signo tabulando desde un x propuesto hacia ambos lados."""
     if max_tabulations <= 0:
         raise ValueError("Las tabulaciones maximas deben ser mayores que 0.")
 
@@ -120,6 +121,8 @@ def find_first_sign_change(
     prev_left_x = center_x
     prev_left_f = f_center
 
+    # Iterativamente tabula en pasos crecientes: primero a la derecha, luego a la izquierda,
+    # comprobando si existe un cambio de signo entre el punto previo y el punto actual.
     for step in range(1, max_tabulations + 1):
         right_x = center_x + float(step)
         right_f = function(right_x)
@@ -157,6 +160,7 @@ def find_first_sign_change(
             return SignChangeSearchResult(interval=(left_x, prev_left_x), records=records)
         prev_left_x, prev_left_f = left_x, left_f
 
+    # No se encontró cambio de signo tras las tabulaciones solicitadas
     return SignChangeSearchResult(interval=None, records=records)
 
 
@@ -167,7 +171,7 @@ def run_bisection(
     error_tolerance_pct: float,
     max_iterations: int = 200,
 ) -> BisectionResult:
-    """Run bisection until the target approximate percent error is reached."""
+    """Ejecuta el método de la bisección hasta alcanzar el error porcentual objetivo aproximado."""
     if error_tolerance_pct <= 0:
         raise ValueError("El error porcentual debe ser mayor que 0.")
     if a > b:
@@ -198,6 +202,8 @@ def run_bisection(
     records: List[IterationRecord] = []
     previous_xn: Optional[float] = None
 
+    # Bucle principal del método de la bisección. En cada iteración se calcula xn,
+    # se evalúa f(xn) y se actualiza el intervalo [a, b] conservando el cambio de signo.
     for iteration in range(1, max_iterations + 1):
         xn = (a + b) / 2.0
         fxn = function(xn)

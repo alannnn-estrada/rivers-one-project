@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+"""Interfaz gráfica para el método de la bisección.
+
+Permite ingresar una fórmula en `x`, buscar un intervalo con cambio de signo,
+ejecutar el método de la bisección, mostrar la tabla de iteraciones y la gráfica
+de la función con la raíz aproximada marcada.
+"""
+
 import tkinter as tk
 from tkinter import messagebox, ttk
 from typing import Optional
@@ -38,7 +45,7 @@ class BisectionApp:
         main = ttk.Frame(self.root, padding=12)
         main.pack(fill=tk.BOTH, expand=True)
 
-        # Dedicated style so multiline derivations are not clipped in this table.
+        # Estilo dedicado para que las derivaciones multilínea no se recorten en la tabla.
         style = ttk.Style(self.root)
         style.configure("Sign.Treeview", rowheight=44)
 
@@ -46,6 +53,7 @@ class BisectionApp:
         input_frame.pack(fill=tk.X)
 
         self.formula_var = tk.StringVar(value="x^3 + 2x^2 - 9")
+        # Alternativa: dejar la fórmula en blanco al iniciar
         # self.formula_var = tk.StringVar(value="")
         self.proposed_var = tk.StringVar(value="0")
         self.tab_max_var = tk.StringVar(value="100")
@@ -127,6 +135,7 @@ class BisectionApp:
         y_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
     def calculate(self) -> None:
+        # Valida entradas, compila la fórmula, busca cambio de signo y ejecuta bisección
         try:
             formula = self.formula_var.get().strip()
             proposed_number = float(self.proposed_var.get())
@@ -171,6 +180,7 @@ class BisectionApp:
             messagebox.showerror("Entrada invalida", str(exc))
 
     def _render_result(self, result: BisectionResult) -> None:
+        # Limpia la tabla y llena las filas con los registros de iteración
         self._clear_bisection_table()
 
         for rec in result.records:
@@ -264,6 +274,7 @@ class BisectionApp:
             self.table.delete(item)
 
     def show_plot(self) -> None:
+        # Muestra la gráfica de la función y marca la raíz aproximada
         if self.result is None or self.compiled_function is None:
             messagebox.showwarning("Sin datos", "Primero realice el calculo de biseccion.")
             return
