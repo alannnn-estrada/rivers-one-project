@@ -54,6 +54,12 @@ class SignChangeSearchResult:
     records: List[SignChangeRecord]
 
 
+@dataclass
+class MultipleSignChangeSearchResult:
+    intervals: List[Tuple[float, float]]
+    records: List[SignChangeRecord]
+
+
 def compile_function(expression: str) -> Callable[[float], float]:
     """Compila una expresión de usuario en la variable x a una función numérica."""
     x = Symbol("x")
@@ -164,6 +170,82 @@ def find_first_sign_change(
     return SignChangeSearchResult(interval=None, records=records)
 
 
+def find_all_sign_changes(
+    function: Callable[[float], float],
+    proposed_number: float,
+    max_tabulations: int,
+) -> MultipleSignChangeSearchResult:
+    """Tabula desde `proposed_number` hacia ambos lados y devuelve
+    todos los intervalos que muestran cambio de signo encontrados.
+
+    Devuelve también los registros intermedios para ayudar en la trazabilidad.
+    """
+    if max_tabulations <= 0:
+        raise ValueError("Las tabulaciones maximas deben ser mayores que 0.")
+
+    records: List[SignChangeRecord] = []
+    found_intervals: List[Tuple[float, float]] = []
+    center_x = float(proposed_number)
+    f_center = function(center_x)
+
+    if f_center == 0:
+        records.append(
+            SignChangeRecord(
+                step=0,
+                direction="centro",
+                x_left=center_x,
+                x_right=center_x,
+                fx_left=f_center,
+                fx_right=f_center,
+                has_sign_change=True,
+            )
+        )
+        found_intervals.append((center_x, center_x))
+
+    prev_right_x = center_x
+    prev_right_f = f_center
+    prev_left_x = center_x
+    prev_left_f = f_center
+
+    for step in range(1, max_tabulations + 1):
+        right_x = center_x + float(step)
+        right_f = function(right_x)
+        right_has_change = _has_sign_change(prev_right_f, right_f)
+        rec_r = SignChangeRecord(
+            step=step,
+            direction="derecha",
+            x_left=prev_right_x,
+            x_right=right_x,
+            fx_left=prev_right_f,
+            fx_right=right_f,
+            has_sign_change=right_has_change,
+        )
+        records.append(rec_r)
+        if right_has_change:
+            found_intervals.append((prev_right_x, right_x))
+        prev_right_x, prev_right_f = right_x, right_f
+
+        left_x = center_x - float(step)
+        left_f = function(left_x)
+        left_has_change = _has_sign_change(prev_left_f, left_f)
+        rec_l = SignChangeRecord(
+            step=step,
+            direction="izquierda",
+            x_left=prev_left_x,
+            x_right=left_x,
+            fx_left=prev_left_f,
+            fx_right=left_f,
+            has_sign_change=left_has_change,
+        )
+        records.append(rec_l)
+        if left_has_change:
+            # mantener orden (x_izq, x_der)
+            found_intervals.append((left_x, prev_left_x))
+        prev_left_x, prev_left_f = left_x, left_f
+
+    return MultipleSignChangeSearchResult(intervals=found_intervals, records=records)
+
+
 def run_bisection(
     function: Callable[[float], float],
     a: float,
@@ -179,7 +261,7 @@ def run_bisection(
 
     fa = function(a)
     fb = function(b)
-
+    
     if not _has_sign_change(fa, fb):
         raise ValueError("El intervalo inicial no tiene cambio de signo.")
 

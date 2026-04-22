@@ -1,147 +1,194 @@
 from __future__ import annotations
 
-"""Interfaz gráfica para el método de la bisección.
+"""Interfaz gráfica usando PySide6 para el método de la bisección.
 
-Permite ingresar una fórmula en `x`, buscar un intervalo con cambio de signo,
-ejecutar el método de la bisección, mostrar la tabla de iteraciones y la gráfica
-de la función con la raíz aproximada marcada.
+Reimplementa la UI previamente basada en Tkinter. Mantiene la lógica central
+en `biseccion_app.math_engine` y usa Qt widgets para la interacción y tablas.
 """
 
-import tkinter as tk
-from tkinter import messagebox, ttk
 from typing import Optional
 import re
 
-import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
+
+# Intento de importación de Qt + FigureCanvas en un único bloque
+try:
+    from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+
+    from PySide6.QtWidgets import (
+        QApplication,
+        QMainWindow,
+        QWidget,
+        QVBoxLayout,
+        QHBoxLayout,
+        QLabel,
+        QLineEdit,
+        QPushButton,
+        QTableWidget,
+        QTableWidgetItem,
+        QHeaderView,
+        QTreeWidget,
+        QTreeWidgetItem,
+        QGroupBox,
+        QMessageBox,
+        QComboBox,
+    )
+    from PySide6.QtCore import Qt
+except Exception as exc:  # pragma: no cover - facilita mensaje claro si faltan bindings
+    raise ImportError(
+        "Falta un binding de Qt necesario para la interfaz gráfica.\n"
+        "Instale PySide6 o PyQt5 en su entorno virtual y vuelva a ejecutar.\n\n"
+        "Pasos rápidos (Windows PowerShell):\n"
+        ".\\venv\\Scripts\\activate  # activar el venv\n"
+        "pip install PySide6  # o: pip install PyQt5\n\n"
+        f"Mensaje original: {exc}"
+    )
 
 from biseccion_app.math_engine import (
     BisectionResult,
     FormulaError,
     SignChangeSearchResult,
+    MultipleSignChangeSearchResult,
     compile_function,
     find_first_sign_change,
+    find_all_sign_changes,
     run_bisection,
 )
+from biseccion_app.methods import get_available_methods
 
 
-class BisectionApp:
-    def __init__(self, root: tk.Tk) -> None:
-        self.root = root
-        self.root.title("Metodo de biseccion")
-        self.root.geometry("1080x680")
+class BisectionApp(QMainWindow):
+    def __init__(self) -> None:
+        super().__init__()
+        self.setWindowTitle("Metodo de biseccion")
+        self.resize(1080, 680)
 
         self.compiled_function = None
         self.formula_text = ""
         self.sign_search_result: Optional[SignChangeSearchResult] = None
         self.plot_span = 5.0
         self.result: Optional[BisectionResult] = None
+        self.found_roots: list[Tuple[int, BisectionResult]] = []
+        self._plot_window: Optional[QWidget] = None
 
         self._build_ui()
 
     def _build_ui(self) -> None:
-        main = ttk.Frame(self.root, padding=12)
-        main.pack(fill=tk.BOTH, expand=True)
+        central = QWidget()
+        self.setCentralWidget(central)
+        main_layout = QVBoxLayout(central)
 
-        # Estilo dedicado para que las derivaciones multilínea no se recorten en la tabla.
-        style = ttk.Style(self.root)
-        style.configure("Sign.Treeview", rowheight=44)
+        # Entradas
+        input_group = QGroupBox("Entradas")
+        input_layout = QHBoxLayout()
+        input_group.setLayout(input_layout)
 
-        input_frame = ttk.LabelFrame(main, text="Entradas", padding=10)
-        input_frame.pack(fill=tk.X)
+        left_layout = QVBoxLayout()
+        right_layout = QVBoxLayout()
 
-        self.formula_var = tk.StringVar(value="x^3 + 2x^2 - 9")
-        # Alternativa: dejar la fórmula en blanco al iniciar
-        # self.formula_var = tk.StringVar(value="")
-        self.proposed_var = tk.StringVar(value="0")
-        self.tab_max_var = tk.StringVar(value="100")
-        self.error_var = tk.StringVar(value="0.001")
-        self.max_iter_var = tk.StringVar(value="100")
-        self.status_var = tk.StringVar(value="Listo.")
+        self.formula_edit = QLineEdit("x^3 + 2x^2 - 9")
+        self.proposed_edit = QLineEdit("0")
+        self.tab_max_edit = QLineEdit("100")
+        self.error_edit = QLineEdit("0.001")
+        self.max_iter_edit = QLineEdit("100")
 
-        fields = [
-            ("Formula f(x):", self.formula_var),
-            ("Numero propuesto:", self.proposed_var),
-            ("Tabulaciones maximas (busqueda):", self.tab_max_var),
-            ("Error porcentual (%):", self.error_var),
-            ("Max iteraciones:", self.max_iter_var),
-        ]
+        left_layout.addWidget(QLabel("Formula f(x):"))
+        left_layout.addWidget(self.formula_edit)
+        left_layout.addWidget(QLabel("Numero propuesto:"))
+        left_layout.addWidget(self.proposed_edit)
 
-        for row, (label_text, variable) in enumerate(fields):
-            ttk.Label(input_frame, text=label_text).grid(row=row, column=0, sticky="w", padx=(0, 8), pady=4)
-            ttk.Entry(input_frame, textvariable=variable, width=35).grid(row=row, column=1, sticky="we", pady=4)
+        right_layout.addWidget(QLabel("Tabulaciones maximas (busqueda):"))
+        right_layout.addWidget(self.tab_max_edit)
+        right_layout.addWidget(QLabel("Error porcentual (%):"))
+        right_layout.addWidget(self.error_edit)
+        right_layout.addWidget(QLabel("Max iteraciones:"))
+        right_layout.addWidget(self.max_iter_edit)
 
-        input_frame.columnconfigure(1, weight=1)
+        input_layout.addLayout(left_layout)
+        input_layout.addLayout(right_layout)
 
-        button_frame = ttk.Frame(main, padding=(0, 10))
-        button_frame.pack(fill=tk.X)
+        main_layout.addWidget(input_group)
 
-        ttk.Button(button_frame, text="Calcular", command=self.calculate).pack(side=tk.LEFT)
-        self.plot_button = ttk.Button(button_frame, text="Mostrar grafica", command=self.show_plot, state=tk.DISABLED)
-        self.plot_button.pack(side=tk.LEFT, padx=8)
-        ttk.Button(button_frame, text="Limpiar", command=self.clear_table).pack(side=tk.LEFT)
+        # Botones
+        button_layout = QHBoxLayout()
+        calc_btn = QPushButton("Calcular")
+        calc_btn.clicked.connect(self.calculate)
+        all_btn = QPushButton("Buscar todas")
+        all_btn.clicked.connect(self.calculate_all)
+        # Selector de método (menu escalable)
+        self.method_combo = QComboBox()
+        for mid, name, desc in get_available_methods():
+            self.method_combo.addItem(name, mid)
+        execute_btn = QPushButton("Ejecutar método")
+        execute_btn.clicked.connect(self.execute_selected_method)
+        self.plot_btn = QPushButton("Mostrar grafica")
+        self.plot_btn.setEnabled(False)
+        self.plot_btn.clicked.connect(self.show_plot)
+        clear_btn = QPushButton("Limpiar")
+        clear_btn.clicked.connect(self.clear_table)
 
-        status_label = ttk.Label(main, textvariable=self.status_var, foreground="#1c3d5a")
-        status_label.pack(fill=tk.X, pady=(0, 8))
+        button_layout.addWidget(calc_btn)
+        button_layout.addWidget(all_btn)
+        button_layout.addWidget(self.method_combo)
+        button_layout.addWidget(execute_btn)
+        button_layout.addWidget(self.plot_btn)
+        button_layout.addWidget(clear_btn)
+        button_layout.addStretch()
 
-        tab_frame = ttk.LabelFrame(main, text="Tabulacion para encontrar cambio de signo", padding=8)
-        tab_frame.pack(fill=tk.BOTH, expand=False)
+        main_layout.addLayout(button_layout)
+
+        # Estado
+        self.status_label = QLabel("Listo.")
+        self.status_label.setStyleSheet("color: #1c3d5a;")
+        main_layout.addWidget(self.status_label)
+
+        # Tabulación (cambio de signo)
+        sign_group = QGroupBox("Tabulacion para encontrar cambio de signo")
+        sign_layout = QVBoxLayout()
+        sign_group.setLayout(sign_layout)
+
+        # filtro para mostrar solo cambios/no cambios
+        self.sign_filter_combo = QComboBox()
+        self.sign_filter_combo.addItem("Todos", "all")
+        self.sign_filter_combo.addItem("Solo con cambio", "with")
+        self.sign_filter_combo.addItem("Solo sin cambio", "without")
+        self.sign_filter_combo.currentIndexChanged.connect(self._re_render_sign_table)
+        sign_layout.addWidget(self.sign_filter_combo)
 
         tab_columns = ("Paso", "Lado", "Intervalo", "f(x_izq)", "f(x_der)", "Cambio", "Desarrollo")
-        self.sign_table = ttk.Treeview(tab_frame, columns=tab_columns, show="headings", height=8, style="Sign.Treeview")
+        self.sign_table = QTreeWidget()
+        self.sign_table.setColumnCount(len(tab_columns))
+        self.sign_table.setHeaderLabels(list(tab_columns))
+        self.sign_table.header().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.sign_table.header().setStretchLastSection(True)
 
-        for col in tab_columns:
-            self.sign_table.heading(col, text=col)
-            if col == "Paso":
-                width = 55
-            elif col in ("Lado", "Cambio"):
-                width = 90
-            elif col == "Intervalo":
-                width = 160
-            elif col in ("f(x_izq)", "f(x_der)"):
-                width = 90
-            else:
-                width = 470
-            anchor = "w" if col == "Desarrollo" else "center"
-            self.sign_table.column(col, width=width, anchor=anchor)
+        self.sign_table.itemClicked.connect(self._on_sign_item_clicked)
+        sign_layout.addWidget(self.sign_table)
+        main_layout.addWidget(sign_group)
 
-        tab_scroll_x = ttk.Scrollbar(tab_frame, orient=tk.HORIZONTAL, command=self.sign_table.xview)
-        tab_scroll_y = ttk.Scrollbar(tab_frame, orient=tk.VERTICAL, command=self.sign_table.yview)
-        self.sign_table.configure(xscrollcommand=tab_scroll_x.set, yscrollcommand=tab_scroll_y.set)
-
-        self.sign_table.grid(row=0, column=0, sticky="nsew")
-        tab_scroll_y.grid(row=0, column=1, sticky="ns")
-        tab_scroll_x.grid(row=1, column=0, sticky="ew")
-        tab_frame.columnconfigure(0, weight=1)
-        tab_frame.rowconfigure(0, weight=1)
-
-        table_frame = ttk.LabelFrame(main, text="Tabla del metodo", padding=8)
-        table_frame.pack(fill=tk.BOTH, expand=True)
+        # Tabla del método
+        table_group = QGroupBox("Tabla del metodo")
+        table_layout = QVBoxLayout()
+        table_group.setLayout(table_layout)
 
         columns = ("n", "a", "b", "xn", "f(a)", "f(b)", "f(xn)", "Error %")
-        self.table = ttk.Treeview(table_frame, columns=columns, show="headings", height=16)
+        self.table = QTableWidget(0, len(columns))
+        self.table.setHorizontalHeaderLabels(list(columns))
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setStretchLastSection(True)
 
-        for col in columns:
-            self.table.heading(col, text=col)
-            width = 90 if col != "n" else 60
-            self.table.column(col, width=width, anchor="center")
-
-        y_scroll = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=self.table.yview)
-        self.table.configure(yscrollcommand=y_scroll.set)
-
-        self.table.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        y_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        table_layout.addWidget(self.table)
+        main_layout.addWidget(table_group)
 
     def calculate(self) -> None:
-        # Valida entradas, compila la fórmula, busca cambio de signo y ejecuta bisección
         try:
-            formula = self.formula_var.get().strip()
-            proposed_number = float(self.proposed_var.get())
-            max_tabulations = int(self.tab_max_var.get())
-            error_pct = float(self.error_var.get())
-            max_iter = int(self.max_iter_var.get())
+            formula = self.formula_edit.text().strip()
+            proposed_number = float(self.proposed_edit.text())
+            max_tabulations = int(self.tab_max_edit.text())
+            error_pct = float(self.error_edit.text())
+            max_iter = int(self.max_iter_edit.text())
 
             if not formula:
                 raise ValueError("Debe ingresar una formula en terminos de x.")
@@ -155,50 +202,50 @@ class BisectionApp:
             self.compiled_function = compile_function(formula)
             self.formula_text = formula
             self.sign_search_result = find_first_sign_change(
-                self.compiled_function,
-                proposed_number,
-                max_tabulations,
+                self.compiled_function, proposed_number, max_tabulations
             )
             self._render_sign_tabulation(self.sign_search_result)
 
             if self.sign_search_result.interval is None:
                 raise ValueError(
-                    "No se encontro cambio de signo en la tabulacion. "
-                    "Se evaluo desde el numero propuesto hacia +x y -x hasta el maximo indicado."
+                    "No se encontro cambio de signo en la tabulacion. Se evaluo desde el numero propuesto hacia +x y -x hasta el maximo indicado."
                 )
 
             a0, b0 = self.sign_search_result.interval
             self.result = run_bisection(self.compiled_function, a0, b0, error_pct, max_iter)
+            # guardar como lista de raices encontradas (comportamiento original: 1 raiz)
+            self.found_roots = [(1, self.result)]
             self.plot_span = max(5.0, abs(a0), abs(b0)) * 1.5
 
             self._render_result(self.result)
-            self.plot_button.configure(state=tk.NORMAL)
+            self.plot_btn.setEnabled(True)
 
         except (ValueError, FormulaError) as exc:
-            self.plot_button.configure(state=tk.DISABLED)
-            self.status_var.set("Error en el calculo.")
-            messagebox.showerror("Entrada invalida", str(exc))
+            self.plot_btn.setEnabled(False)
+            self.status_label.setText("Error en el calculo.")
+            QMessageBox.critical(self, "Entrada invalida", str(exc))
 
     def _render_result(self, result: BisectionResult) -> None:
-        # Limpia la tabla y llena las filas con los registros de iteración
-        self._clear_bisection_table()
-
+        # limpiar tabla
+        self.table.setRowCount(0)
         for rec in result.records:
+            row = self.table.rowCount()
+            self.table.insertRow(row)
             error_text = "-" if rec.error_pct is None else f"{rec.error_pct:.6f}"
-            self.table.insert(
-                "",
-                tk.END,
-                values=(
-                    rec.iteration,
-                    f"{rec.a:.6f}",
-                    f"{rec.b:.6f}",
-                    f"{rec.xn:.6f}",
-                    f"{rec.fa:.6f}",
-                    f"{rec.fb:.6f}",
-                    f"{rec.fxn:.6f}",
-                    error_text,
-                ),
-            )
+            values = [
+                str(rec.iteration),
+                f"{rec.a:.6f}",
+                f"{rec.b:.6f}",
+                f"{rec.xn:.6f}",
+                f"{rec.fa:.6f}",
+                f"{rec.fb:.6f}",
+                f"{rec.fxn:.6f}",
+                error_text,
+            ]
+            for col, val in enumerate(values):
+                item = QTableWidgetItem(val)
+                item.setTextAlignment(Qt.AlignCenter)
+                self.table.setItem(row, col, item)
 
         start_a, start_b = result.sign_interval
         final_error = result.records[-1].error_pct
@@ -208,16 +255,14 @@ class BisectionApp:
                 summary = f"Raiz aproximada: {result.root:.10f}. Cambio de signo en [{start_a:.6f}, {start_b:.6f}]."
             else:
                 summary = (
-                    f"Raiz aproximada: {result.root:.10f}. "
-                    f"Error final: {final_error:.6f}%. Cambio de signo en [{start_a:.6f}, {start_b:.6f}]."
+                    f"Raiz aproximada: {result.root:.10f}. Error final: {final_error:.6f}%. Cambio de signo en [{start_a:.6f}, {start_b:.6f}]."
                 )
         else:
             summary = (
-                f"Se alcanzo el maximo de iteraciones. Ultima aproximacion: {result.root:.10f}. "
-                f"Cambio de signo en [{start_a:.6f}, {start_b:.6f}]."
+                f"Se alcanzo el maximo de iteraciones. Ultima aproximacion: {result.root:.10f}. Cambio de signo en [{start_a:.6f}, {start_b:.6f}]."
             )
 
-        self.status_var.set(summary)
+        self.status_label.setText(summary)
 
     def _format_x(self, value: float) -> str:
         text = f"{value:.6f}".rstrip("0").rstrip(".")
@@ -228,8 +273,10 @@ class BisectionApp:
         return re.sub(r"\bx\b", replacement, self.formula_text)
 
     def _render_sign_tabulation(self, search_result: SignChangeSearchResult) -> None:
-        for item in self.sign_table.get_children():
-            self.sign_table.delete(item)
+        self.sign_table.clear()
+        # Respect filter selection
+        filter_mode = getattr(self, "sign_filter_combo", None)
+        filter_value = filter_mode.currentData() if filter_mode is not None else "all"
 
         for rec in search_result.records:
             side = rec.direction
@@ -243,48 +290,183 @@ class BisectionApp:
                 f"f({self._format_x(rec.x_right)}) = {formula_right} = {rec.fx_right:.6f}"
             )
 
-            self.sign_table.insert(
-                "",
-                tk.END,
-                values=(
-                    rec.step,
-                    side,
-                    interval_text,
-                    f"{rec.fx_left:.6f}",
-                    f"{rec.fx_right:.6f}",
-                    sign_text,
-                    derivation,
-                ),
-            )
+            item = QTreeWidgetItem([
+                str(rec.step),
+                side,
+                interval_text,
+                f"{rec.fx_left:.6f}",
+                f"{rec.fx_right:.6f}",
+                sign_text,
+                derivation,
+            ])
+            # almacenar datos del intervalo en el item (string) para uso al clic
+            interval_data = f"{rec.x_left},{rec.x_right},{int(rec.has_sign_change)}"
+            item.setData(0, Qt.UserRole, interval_data)
+            # aplicar filtro
+            if filter_value == "all" or (filter_value == "with" and rec.has_sign_change) or (
+                filter_value == "without" and not rec.has_sign_change
+            ):
+                self.sign_table.addTopLevelItem(item)
 
-    def clear_table(self, reset_status: bool = True) -> None:
-        self._clear_bisection_table()
+    def _re_render_sign_table(self) -> None:
+        # cuando se cambia el filtro, volver a renderizar usando el último search_result
+        sr = self.sign_search_result
+        if sr is None:
+            return
+        self._render_sign_tabulation(sr)
 
-        for item in self.sign_table.get_children():
-            self.sign_table.delete(item)
-
-        if reset_status:
-            self.status_var.set("Listo.")
-            self.result = None
-            self.sign_search_result = None
-            self.plot_button.configure(state=tk.DISABLED)
-
-    def _clear_bisection_table(self) -> None:
-        for item in self.table.get_children():
-            self.table.delete(item)
-
-    def show_plot(self) -> None:
-        # Muestra la gráfica de la función y marca la raíz aproximada
-        if self.result is None or self.compiled_function is None:
-            messagebox.showwarning("Sin datos", "Primero realice el calculo de biseccion.")
+    def _on_sign_item_clicked(self, item: QTreeWidgetItem, column: int) -> None:
+        """Maneja el clic en una fila de la tabulación. Si tiene cambio de signo,
+        ejecuta bisección en ese intervalo y muestra su tabla en la sección principal.
+        """
+        data = item.data(0, Qt.UserRole)
+        if not data:
+            return
+        try:
+            parts = str(data).split(",")
+            x_left = float(parts[0])
+            x_right = float(parts[1])
+            has_change = bool(int(parts[2]))
+        except Exception:
+            QMessageBox.warning(self, "Dato invalido", "No se pudo interpretar el intervalo asociado.")
             return
 
-        x_values = np.linspace(-self.plot_span, self.plot_span, 600)
+        if not has_change:
+            QMessageBox.information(self, "Sin cambio", "El intervalo seleccionado no muestra cambio de signo.")
+            return
+
+        try:
+            res = run_bisection(self.compiled_function, x_left, x_right, float(self.error_edit.text()), int(self.max_iter_edit.text()))
+        except Exception as exc:
+            QMessageBox.critical(self, "Error en biseccion", str(exc))
+            return
+
+        # mostrar resultado en la tabla principal
+        self.result = res
+        self.found_roots = [(1, res)]
+        self.plot_span = max(5.0, abs(x_left), abs(x_right)) * 1.5
+        self._render_result(res)
+        self.plot_btn.setEnabled(True)
+
+    def calculate_all(self) -> None:
+        """Busca todos los intervalos con cambio de signo en la tabulacion y
+        aplica biseccion a cada uno, mostrando las raices encontradas.
+        """
+        try:
+            formula = self.formula_edit.text().strip()
+            proposed_number = float(self.proposed_edit.text())
+            max_tabulations = int(self.tab_max_edit.text())
+            error_pct = float(self.error_edit.text())
+            max_iter = int(self.max_iter_edit.text())
+
+            if not formula:
+                raise ValueError("Debe ingresar una formula en terminos de x.")
+
+            self.compiled_function = compile_function(formula)
+            self.formula_text = formula
+
+            multi: MultipleSignChangeSearchResult = find_all_sign_changes(
+                self.compiled_function, proposed_number, max_tabulations
+            )
+            # guardar para re-render y filtros
+            self.sign_search_result = multi
+            # _render_sign_tabulation acepta cualquier objeto con .records
+            self._render_sign_tabulation(multi)
+
+            if not multi.intervals:
+                raise ValueError("No se encontraron intervalos con cambio de signo.")
+
+            all_roots: list[Tuple[int, BisectionResult]] = []
+            for idx, (a0, b0) in enumerate(multi.intervals, start=1):
+                try:
+                    res = run_bisection(self.compiled_function, a0, b0, error_pct, max_iter)
+                except ValueError:
+                    # si el intervalo no es válido para bisección, lo saltamos
+                    continue
+                all_roots.append((idx, res))
+
+            if not all_roots:
+                raise ValueError("No fue posible aplicar biseccion a los intervalos detectados.")
+
+            # Mostrar todas las raices en un mensaje y poblar la tabla con registros concatenados
+            self.table.setRowCount(0)
+            roots_list: list[str] = []
+            for idx, res in all_roots:
+                roots_list.append(f"Raiz {idx}: {res.root:.10f} (met_tol={res.met_tolerance})")
+                # insertar registros de la biseccion en la tabla, con prefijo del indice de raiz
+                for rec in res.records:
+                    row = self.table.rowCount()
+                    self.table.insertRow(row)
+                    error_text = "-" if rec.error_pct is None else f"{rec.error_pct:.6f}"
+                    values = [
+                        f"{idx}-{rec.iteration}",
+                        f"{rec.a:.6f}",
+                        f"{rec.b:.6f}",
+                        f"{rec.xn:.6f}",
+                        f"{rec.fa:.6f}",
+                        f"{rec.fb:.6f}",
+                        f"{rec.fxn:.6f}",
+                        error_text,
+                    ]
+                    for col, val in enumerate(values):
+                        item = QTableWidgetItem(val)
+                        item.setTextAlignment(Qt.AlignCenter)
+                        self.table.setItem(row, col, item)
+
+            summary = "\n".join(roots_list)
+            # guardar todas las raices encontradas para graficar y acceso posterior
+            self.found_roots = all_roots
+            # ajustar plot_span según extremos de todos los intervalos
+            min_x = min((iv[0] for iv in multi.intervals), default=0.0)
+            max_x = max((iv[1] for iv in multi.intervals), default=0.0)
+            self.plot_span = max(5.0, abs(min_x), abs(max_x)) * 1.5
+
+            self.status_label.setText(f"Se encontraron {len(all_roots)} raiz(es).")
+            QMessageBox.information(self, "Raices encontradas", summary)
+            # permitir graficar la primera raiz encontrada
+            self.result = all_roots[0][1]
+            self.plot_btn.setEnabled(True)
+
+        except (ValueError, FormulaError) as exc:
+            self.plot_btn.setEnabled(False)
+            self.status_label.setText("Error en el calculo.")
+            QMessageBox.critical(self, "Entrada invalida", str(exc))
+
+    def execute_selected_method(self) -> None:
+        """Ejecuta la acción asociada al método seleccionado en el combo.
+
+        Para preservar la interfaz previa, si el método seleccionado es
+        `biseccion` se delega a `calculate()` (comportamiento original).
+        Para `buscar_todas` se delega a `calculate_all()`.
+        """
+        current_id = self.method_combo.currentData()
+        if current_id == "biseccion":
+            self.calculate()
+        elif current_id == "buscar_todas":
+            self.calculate_all()
+        else:
+            QMessageBox.warning(self, "Metodo desconocido", "El metodo seleccionado no está implementado.")
+
+    def clear_table(self, reset_status: bool = True) -> None:
+        self.table.setRowCount(0)
+        self.sign_table.clear()
+        if reset_status:
+            self.status_label.setText("Listo.")
+            self.result = None
+            self.sign_search_result = None
+            self.plot_btn.setEnabled(False)
+
+    def show_plot(self) -> None:
+        if self.result is None or self.compiled_function is None:
+            QMessageBox.warning(self, "Sin datos", "Primero realice el calculo de biseccion.")
+            return
+        x_values = np.linspace(-self.plot_span, self.plot_span, 1200)
         y_values = np.array([self.compiled_function(x) for x in x_values])
 
-        plot_window = tk.Toplevel(self.root)
-        plot_window.title("Grafica de la funcion")
-        plot_window.geometry("900x580")
+        plot_window = QWidget()
+        plot_window.setWindowTitle("Grafica de la funcion")
+        plot_window.resize(900, 580)
+        layout = QVBoxLayout(plot_window)
 
         figure = Figure(figsize=(8.5, 5.2), dpi=100)
         axis = figure.add_subplot(111)
@@ -293,9 +475,19 @@ class BisectionApp:
         axis.axhline(0, color="#4f4f4f", linewidth=1.2)
         axis.axvline(0, color="#4f4f4f", linewidth=1.0, linestyle="--", alpha=0.75)
 
-        root_x = self.result.root
-        root_y = self.compiled_function(root_x)
-        axis.scatter([root_x], [root_y], color="#d62828", s=55, zorder=5, label=f"Raiz aprox: {root_x:.6f}")
+        # Mostrar todas las raíces encontradas (si las hay)
+        if getattr(self, "found_roots", None):
+            for idx, res in self.found_roots:
+                try:
+                    rx = res.root
+                    ry = self.compiled_function(rx)
+                    axis.scatter([rx], [ry], s=55, zorder=5, label=f"Raiz {idx}: {rx:.6f}")
+                except Exception:
+                    continue
+        else:
+            root_x = self.result.root
+            root_y = self.compiled_function(root_x)
+            axis.scatter([root_x], [root_y], color="#d62828", s=55, zorder=5, label=f"Raiz aprox: {root_x:.6f}")
 
         axis.set_title("Funcion y raiz aproximada por biseccion")
         axis.set_xlabel("x")
@@ -303,18 +495,23 @@ class BisectionApp:
         axis.grid(alpha=0.25)
         axis.legend(loc="best")
 
-        canvas = FigureCanvasTkAgg(figure, master=plot_window)
-        canvas.draw()
-        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        canvas = FigureCanvas(figure)
+        layout.addWidget(canvas)
 
-        toolbar_frame = ttk.Frame(plot_window)
-        toolbar_frame.pack(fill=tk.X)
-        ttk.Button(toolbar_frame, text="Cerrar", command=plot_window.destroy).pack(side=tk.RIGHT, padx=8, pady=6)
+        # Mantener referencia a la ventana para evitar que el GC la cierre
+        self._plot_window = plot_window
+
+        close_btn = QPushButton("Cerrar")
+        close_btn.clicked.connect(plot_window.close)
+        layout.addWidget(close_btn, alignment=Qt.AlignRight)
+
+        plot_window.show()
 
 
 def run_app() -> None:
     plt.style.use("seaborn-v0_8-whitegrid")
-    root = tk.Tk()
-    app = BisectionApp(root)
-    root.minsize(980, 620)
-    root.mainloop()
+    app = QApplication([])
+    window = BisectionApp()
+    window.setMinimumSize(980, 620)
+    window.show()
+    app.exec()
