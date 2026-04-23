@@ -60,6 +60,24 @@ class MultipleSignChangeSearchResult:
     records: List[SignChangeRecord]
 
 
+@dataclass
+class SuccessiveApproxRecord:
+    iteration: int
+    xn: float
+    fxn: float
+    xn_next: float
+    error_abs: float
+    error_pct: Optional[float]
+
+
+@dataclass
+class SuccessiveApproxResult:
+    records: List[SuccessiveApproxRecord]
+    root: float
+    met_tolerance: bool
+    m: float
+
+
 def compile_function(expression: str) -> Callable[[float], float]:
     """Compila una expresión de usuario en la variable x a una función numérica."""
     x = Symbol("x")
@@ -331,4 +349,71 @@ def run_bisection(
         root=records[-1].xn,
         met_tolerance=False,
         sign_interval=(records[0].a, records[0].b),
+    )
+
+
+def run_successive_approximations(
+    function: Callable[[float], float],
+    x0: float,
+    x1: float,
+    x2: float,
+    error_tolerance_abs: float,
+    max_iterations: int = 200,
+) -> SuccessiveApproxResult:
+    """Ejecuta aproximaciones sucesivas usando:
+
+    x_(n+1) = (f(x_n) - m*x_n)/(-m),
+    m = (f(x2)-f(x1))/(x2-x1)
+    """
+    if error_tolerance_abs <= 0:
+        raise ValueError("La tolerancia absoluta debe ser mayor que 0.")
+    if max_iterations <= 0:
+        raise ValueError("El maximo de iteraciones debe ser mayor que 0.")
+    if x2 == x1:
+        raise ValueError("x1 y x2 no pueden ser iguales para calcular m.")
+
+    fx1 = function(x1)
+    fx2 = function(x2)
+    m = (fx2 - fx1) / (x2 - x1)
+    if m == 0:
+        raise ValueError("m = 0. No se puede aplicar la formula de aproximaciones sucesivas.")
+
+    records: List[SuccessiveApproxRecord] = []
+    xn = float(x0)
+
+    for iteration in range(1, max_iterations + 1):
+        fxn = function(xn)
+        xn_next = (fxn - m * xn) / (-m)
+        error_abs = abs(xn_next - xn)
+        if xn_next == 0:
+            error_pct = None
+        else:
+            error_pct = abs((xn_next - xn) / xn_next) * 100.0
+
+        records.append(
+            SuccessiveApproxRecord(
+                iteration=iteration,
+                xn=xn,
+                fxn=fxn,
+                xn_next=xn_next,
+                error_abs=error_abs,
+                error_pct=error_pct,
+            )
+        )
+
+        if fxn == 0 or error_abs <= error_tolerance_abs:
+            return SuccessiveApproxResult(
+                records=records,
+                root=xn_next,
+                met_tolerance=True,
+                m=m,
+            )
+
+        xn = xn_next
+
+    return SuccessiveApproxResult(
+        records=records,
+        root=records[-1].xn_next,
+        met_tolerance=False,
+        m=m,
     )

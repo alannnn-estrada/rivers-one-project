@@ -14,8 +14,14 @@ def get_available_methods() -> List[Tuple[str, str, str]]:
     Actualmente incluye:
     - 'biseccion': comportamiento clásico (primera raíz encontrada)
     - 'buscar_todas': tabulación que devuelve todas las raíces encontradas
+    - 'aprox_sucesivas': método de aproximaciones sucesivas
     """
     return [
         ("biseccion", "Bisección (primera raíz)", "Encuentra la primera raíz con bisección"),
         ("buscar_todas", "Buscar todas (todas las raíces)", "Tabula y aplica bisección a todos los intervalos con cambio de signo"),
+        (
+            "aprox_sucesivas",
+            "Aproximaciones sucesivas",
+            "Tabula desde el numero propuesto y aplica aproximaciones sucesivas por intervalo",
+        ),
     ]

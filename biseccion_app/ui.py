@@ -6,7 +6,10 @@ Reimplementa la UI previamente basada en Tkinter. Mantiene la lógica central
 en `biseccion_app.math_engine` y usa Qt widgets para la interacción y tablas.
 """
 
-from typing import Optional
+import subprocess
+import sys
+from pathlib import Path
+from typing import Optional, Tuple
 import re
 
 import numpy as np
@@ -51,12 +54,41 @@ from biseccion_app.math_engine import (
     FormulaError,
     SignChangeSearchResult,
     MultipleSignChangeSearchResult,
+    SuccessiveApproxResult,
     compile_function,
     find_first_sign_change,
     find_all_sign_changes,
     run_bisection,
+    run_successive_approximations,
 )
 from biseccion_app.methods import get_available_methods
+
+
+def _get_runtime_signature() -> str:
+    """Devuelve la versión de Python y metadatos Git del repositorio actual."""
+    python_version = sys.version.split()[0]
+    repo_root = Path(__file__).resolve().parents[1]
+
+    try:
+        commit_id = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        commit_count = subprocess.run(
+            ["git", "rev-list", "--count", "HEAD"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        git_part = f"Git {commit_id} | No.Commit: {commit_count}"
+    except Exception:
+        git_part = "Git no disponible"
+
+    return f"Python {python_version} | {git_part}"
 
 
 class BisectionApp(QMainWindow):
@@ -67,13 +99,15 @@ class BisectionApp(QMainWindow):
 
         self.compiled_function = None
         self.formula_text = ""
-        self.sign_search_result: Optional[SignChangeSearchResult] = None
+        self.sign_search_result: Optional[SignChangeSearchResult | MultipleSignChangeSearchResult] = None
         self.plot_span = 5.0
         self.result: Optional[BisectionResult] = None
+        self.successive_result: Optional[SuccessiveApproxResult] = None
         self.found_roots: list[Tuple[int, BisectionResult]] = []
         self._plot_window: Optional[QWidget] = None
 
         self._build_ui()
+        self._build_runtime_footer()
 
     def _build_ui(self) -> None:
         central = QWidget()
@@ -101,7 +135,7 @@ class BisectionApp(QMainWindow):
 
         right_layout.addWidget(QLabel("Tabulaciones maximas (busqueda):"))
         right_layout.addWidget(self.tab_max_edit)
-        right_layout.addWidget(QLabel("Error porcentual (%):"))
+        right_layout.addWidget(QLabel("Tolerancia de error:"))
         right_layout.addWidget(self.error_edit)
         right_layout.addWidget(QLabel("Max iteraciones:"))
         right_layout.addWidget(self.max_iter_edit)
@@ -113,14 +147,16 @@ class BisectionApp(QMainWindow):
 
         # Botones
         button_layout = QHBoxLayout()
-        calc_btn = QPushButton("Calcular")
-        calc_btn.clicked.connect(self.calculate)
+        # calc_btn = QPushButton("Calcular")
+        # calc_btn.clicked.connect(self.calculate)
         all_btn = QPushButton("Buscar todas")
         all_btn.clicked.connect(self.calculate_all)
         # Selector de método (menu escalable)
         self.method_combo = QComboBox()
         for mid, name, desc in get_available_methods():
             self.method_combo.addItem(name, mid)
+        self.selected_method_id = self.method_combo.currentData()
+        self.method_combo.currentIndexChanged.connect(self._on_method_changed)
         execute_btn = QPushButton("Ejecutar método")
         execute_btn.clicked.connect(self.execute_selected_method)
         self.plot_btn = QPushButton("Mostrar grafica")
@@ -129,7 +165,7 @@ class BisectionApp(QMainWindow):
         clear_btn = QPushButton("Limpiar")
         clear_btn.clicked.connect(self.clear_table)
 
-        button_layout.addWidget(calc_btn)
+        # button_layout.addWidget(calc_btn)
         button_layout.addWidget(all_btn)
         button_layout.addWidget(self.method_combo)
         button_layout.addWidget(execute_btn)
@@ -182,8 +218,15 @@ class BisectionApp(QMainWindow):
         table_layout.addWidget(self.table)
         main_layout.addWidget(table_group)
 
+    def _build_runtime_footer(self) -> None:
+        footer_label = QLabel(_get_runtime_signature())
+        footer_label.setStyleSheet("color: #6b7280; font-size: 11px;")
+        footer_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.statusBar().addPermanentWidget(footer_label, 1)
+
     def calculate(self) -> None:
         try:
+            self.successive_result = None
             formula = self.formula_edit.text().strip()
             proposed_number = float(self.proposed_edit.text())
             max_tabulations = int(self.tab_max_edit.text())
@@ -226,6 +269,8 @@ class BisectionApp(QMainWindow):
             QMessageBox.critical(self, "Entrada invalida", str(exc))
 
     def _render_result(self, result: BisectionResult) -> None:
+        self.table.setColumnCount(8)
+        self.table.setHorizontalHeaderLabels(["n", "a", "b", "xn", "f(a)", "f(b)", "f(xn)", "Error %"])
         # limpiar tabla
         self.table.setRowCount(0)
         for rec in result.records:
@@ -263,6 +308,37 @@ class BisectionApp(QMainWindow):
             )
 
         self.status_label.setText(summary)
+
+    def _render_successive_result(self, result: SuccessiveApproxResult) -> None:
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels(["n", "x0", "f(x0)", "g(x0)", "Error %"])
+        self.table.setRowCount(0)
+
+        for rec in result.records:
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            error_pct_text = "-" if rec.error_pct is None else f"{rec.error_pct:.6f}"
+            values = [
+                str(rec.iteration),
+                f"{rec.xn:.6f}",
+                f"{rec.fxn:.6f}",
+                f"{rec.xn_next:.6f}",
+                error_pct_text,
+            ]
+            for col, val in enumerate(values):
+                item = QTableWidgetItem(val)
+                item.setTextAlignment(Qt.AlignCenter)
+                self.table.setItem(row, col, item)
+
+        last_error = result.records[-1].error_abs if result.records else None
+        if result.met_tolerance and last_error is not None:
+            self.status_label.setText(
+                f"Aproximaciones sucesivas: raiz aprox {result.root:.10f}, E_abs final {last_error:.6f}, m={result.m:.6f}."
+            )
+        else:
+            self.status_label.setText(
+                f"Aproximaciones sucesivas: maximo de iteraciones alcanzado, ultima aprox {result.root:.10f}, m={result.m:.6f}."
+            )
 
     def _format_x(self, value: float) -> str:
         text = f"{value:.6f}".rstrip("0").rstrip(".")
@@ -315,9 +391,13 @@ class BisectionApp(QMainWindow):
             return
         self._render_sign_tabulation(sr)
 
+    def _on_method_changed(self) -> None:
+        """Actualiza el método activo para evitar ejecuciones con estado previo."""
+        self.selected_method_id = self.method_combo.currentData()
+
     def _on_sign_item_clicked(self, item: QTreeWidgetItem, column: int) -> None:
         """Maneja el clic en una fila de la tabulación. Si tiene cambio de signo,
-        ejecuta bisección en ese intervalo y muestra su tabla en la sección principal.
+        ejecuta el método activo en ese intervalo y muestra su desarrollo.
         """
         data = item.data(0, Qt.UserRole)
         if not data:
@@ -335,24 +415,78 @@ class BisectionApp(QMainWindow):
             QMessageBox.information(self, "Sin cambio", "El intervalo seleccionado no muestra cambio de signo.")
             return
 
+        active_method = self.method_combo.currentData()
+
+        if active_method == "aprox_sucesivas":
+            try:
+                error_abs = float(self.error_edit.text())
+                max_iter = int(self.max_iter_edit.text())
+                x0 = (x_left + x_right) / 2.0
+                res = run_successive_approximations(
+                    self.compiled_function,
+                    x0,
+                    x_left,
+                    x_right,
+                    error_abs,
+                    max_iter,
+                )
+            except Exception as exc:
+                QMessageBox.critical(self, "Error en aproximaciones sucesivas", str(exc))
+                return
+
+            self.successive_result = res
+            self.result = None
+            self.found_roots = []
+            self.plot_span = max(5.0, abs(x_left), abs(x_right)) * 1.5
+            self._render_successive_result(res)
+            self.plot_btn.setEnabled(True)
+
+            fx1 = self.compiled_function(x_left)
+            fx2 = self.compiled_function(x_right)
+            fx0 = self.compiled_function(x0)
+            gx0 = res.records[0].xn_next if res.records else x0
+
+            dev_text = (
+                "Desarrollo (aproximaciones sucesivas)\n\n"
+                f"Intervalo con cambio: [{x_left:.6f}, {x_right:.6f}]\n"
+                f"m = (y2 - y1)/(x2 - x1) = ({fx2:.6f} - {fx1:.6f})/({x_right:.6f} - {x_left:.6f}) = {res.m:.6f}\n"
+                f"x0 = (x1 + x2)/2 = ({x_left:.6f} + {x_right:.6f})/2 = {x0:.6f}\n"
+                f"f(x0) = {fx0:.6f}\n"
+                f"g(x0) = (f(x0) - m*x0)/(-m) = ({fx0:.6f} - {res.m:.6f}*{x0:.6f})/({-res.m:.6f}) = {gx0:.6f}"
+            )
+            QMessageBox.information(self, "Desarrollo del metodo", dev_text)
+            return
+
+        # bisección y buscar_todas usan la misma ejecución al hacer clic en un intervalo
         try:
             res = run_bisection(self.compiled_function, x_left, x_right, float(self.error_edit.text()), int(self.max_iter_edit.text()))
         except Exception as exc:
             QMessageBox.critical(self, "Error en biseccion", str(exc))
             return
 
-        # mostrar resultado en la tabla principal
         self.result = res
+        self.successive_result = None
         self.found_roots = [(1, res)]
         self.plot_span = max(5.0, abs(x_left), abs(x_right)) * 1.5
         self._render_result(res)
         self.plot_btn.setEnabled(True)
+
+        first = res.records[0] if res.records else None
+        if first is not None:
+            dev_text = (
+                "Desarrollo (biseccion)\n\n"
+                f"Intervalo con cambio: [{x_left:.6f}, {x_right:.6f}]\n"
+                f"x_n = (a + b)/2 = ({first.a:.6f} + {first.b:.6f})/2 = {first.xn:.6f}\n"
+                f"f(a) = {first.fa:.6f}, f(b) = {first.fb:.6f}, f(x_n) = {first.fxn:.6f}"
+            )
+            QMessageBox.information(self, "Desarrollo del metodo", dev_text)
 
     def calculate_all(self) -> None:
         """Busca todos los intervalos con cambio de signo en la tabulacion y
         aplica biseccion a cada uno, mostrando las raices encontradas.
         """
         try:
+            self.successive_result = None
             formula = self.formula_edit.text().strip()
             proposed_number = float(self.proposed_edit.text())
             max_tabulations = int(self.tab_max_edit.text())
@@ -440,12 +574,123 @@ class BisectionApp(QMainWindow):
         Para `buscar_todas` se delega a `calculate_all()`.
         """
         current_id = self.method_combo.currentData()
+        self.selected_method_id = current_id
         if current_id == "biseccion":
             self.calculate()
         elif current_id == "buscar_todas":
             self.calculate_all()
+        elif current_id == "aprox_sucesivas":
+            self.calculate_successive_approximations()
         else:
             QMessageBox.warning(self, "Metodo desconocido", "El metodo seleccionado no está implementado.")
+
+    def calculate_successive_approximations(self) -> None:
+        """Ejecuta aproximaciones sucesivas de forma independiente a bisección."""
+        try:
+            # Preparar tabla de aproximaciones desde el inicio para evitar mostrar columnas previas.
+            self.table.setColumnCount(5)
+            self.table.setHorizontalHeaderLabels(["n", "x0", "f(x0)", "g(x0)", "Error %"])
+            self.table.setRowCount(0)
+
+            formula = self.formula_edit.text().strip()
+            proposed_number = float(self.proposed_edit.text())
+            max_tabulations = int(self.tab_max_edit.text())
+            error_abs = float(self.error_edit.text())
+            max_iter = int(self.max_iter_edit.text())
+
+            if not formula:
+                raise ValueError("Debe ingresar una formula en terminos de x.")
+            if max_tabulations <= 0:
+                raise ValueError("Las tabulaciones maximas deben ser mayores que 0.")
+            if error_abs <= 0:
+                raise ValueError("La tolerancia (E_abs) debe ser mayor que 0.")
+            if max_iter <= 0:
+                raise ValueError("Las iteraciones maximas deben ser mayores que 0.")
+
+            self.compiled_function = compile_function(formula)
+            self.formula_text = formula
+
+            # Buscar todos los intervalos desde el número propuesto.
+            multi = find_all_sign_changes(self.compiled_function, proposed_number, max_tabulations)
+            self.sign_search_result = multi
+            self._render_sign_tabulation(multi)
+
+            if not multi.intervals:
+                raise ValueError("No se encontraron intervalos con cambio de signo en la tabulacion.")
+
+            all_results: list[Tuple[int, float, float, float, SuccessiveApproxResult]] = []
+            for idx, (x1, x2) in enumerate(multi.intervals, start=1):
+                x0 = (x1 + x2) / 2.0
+                try:
+                    res = run_successive_approximations(
+                        self.compiled_function,
+                        x0,
+                        x1,
+                        x2,
+                        error_abs,
+                        max_iter,
+                    )
+                except ValueError:
+                    continue
+                all_results.append((idx, x1, x2, x0, res))
+
+            if not all_results:
+                raise ValueError("No fue posible aplicar aproximaciones sucesivas en los intervalos detectados.")
+
+            roots_summary: list[str] = []
+            calc_steps: list[str] = []
+
+            for idx, x1, x2, x0, res in all_results:
+                fx1 = self.compiled_function(x1)
+                fx2 = self.compiled_function(x2)
+                gx0 = res.records[0].xn_next if res.records else x0
+
+                roots_summary.append(
+                    f"Raiz {idx}: {res.root:.10f}  [intervalo {x1:.6f}, {x2:.6f}]  x0={x0:.6f}  m={res.m:.6f}"
+                )
+                calc_steps.append(
+                    (
+                        f"Raiz {idx}\n"
+                        f"m = (y2 - y1) / (x2 - x1) = ({fx2:.6f} - {fx1:.6f}) / ({x2:.6f} - {x1:.6f}) = {res.m:.6f}\n"
+                        f"x0 = (x1 + x2) / 2 = ({x1:.6f} + {x2:.6f}) / 2 = {x0:.6f}\n"
+                        f"g(x0) = (f(x0) - m*x0) / (-m) = ({res.records[0].fxn:.6f} - {res.m:.6f}*{x0:.6f}) / ({-res.m:.6f}) = {gx0:.6f}"
+                    )
+                )
+                for rec in res.records:
+                    row = self.table.rowCount()
+                    self.table.insertRow(row)
+                    error_pct_text = "-" if rec.error_pct is None else f"{rec.error_pct:.6f}"
+                    values = [
+                        str(rec.iteration),
+                        f"{rec.xn:.6f}",
+                        f"{rec.fxn:.6f}",
+                        f"{rec.xn_next:.6f}",
+                        error_pct_text,
+                    ]
+                    for col, val in enumerate(values):
+                        item = QTableWidgetItem(val)
+                        item.setTextAlignment(Qt.AlignCenter)
+                        self.table.setItem(row, col, item)
+
+            self.successive_result = all_results[0][4]
+            self.result = None
+            self.found_roots = []
+            # Ajustar plot_span según extremos de todos los intervalos
+            min_x = min((all_results[i][1] for i in range(len(all_results))), default=0.0)
+            max_x = max((all_results[i][2] for i in range(len(all_results))), default=0.0)
+            self.plot_span = max(5.0, abs(min_x), abs(max_x)) * 1.5
+            self.status_label.setText(f"Aproximaciones sucesivas: {len(all_results)} raiz(es) detectadas desde la tabulacion.")
+            QMessageBox.information(
+                self,
+                "Raices encontradas",
+                "\n".join(roots_summary) + "\n\nDesarrollo del metodo:\n\n" + "\n\n".join(calc_steps),
+            )
+            self.plot_btn.setEnabled(True)
+
+        except (ValueError, FormulaError) as exc:
+            self.plot_btn.setEnabled(False)
+            self.status_label.setText("Error en el calculo.")
+            QMessageBox.critical(self, "Entrada invalida", str(exc))
 
     def clear_table(self, reset_status: bool = True) -> None:
         self.table.setRowCount(0)
@@ -453,12 +698,13 @@ class BisectionApp(QMainWindow):
         if reset_status:
             self.status_label.setText("Listo.")
             self.result = None
+            self.successive_result = None
             self.sign_search_result = None
             self.plot_btn.setEnabled(False)
 
     def show_plot(self) -> None:
-        if self.result is None or self.compiled_function is None:
-            QMessageBox.warning(self, "Sin datos", "Primero realice el calculo de biseccion.")
+        if self.compiled_function is None or (self.result is None and self.successive_result is None):
+            QMessageBox.warning(self, "Sin datos", "Primero realice un calculo con algun metodo.")
             return
         x_values = np.linspace(-self.plot_span, self.plot_span, 1200)
         y_values = np.array([self.compiled_function(x) for x in x_values])
@@ -475,8 +721,19 @@ class BisectionApp(QMainWindow):
         axis.axhline(0, color="#4f4f4f", linewidth=1.2)
         axis.axvline(0, color="#4f4f4f", linewidth=1.0, linestyle="--", alpha=0.75)
 
-        # Mostrar todas las raíces encontradas (si las hay)
-        if getattr(self, "found_roots", None):
+        method_name = "biseccion"
+        
+        # Mostrar raíz de aproximaciones sucesivas si está disponible
+        if self.successive_result is not None:
+            try:
+                rx = self.successive_result.root
+                ry = self.compiled_function(rx)
+                axis.scatter([rx], [ry], s=55, zorder=5, color="#d62828", label=f"Raiz aprox: {rx:.6f}")
+                method_name = "aproximaciones sucesivas"
+            except Exception:
+                pass
+        # Mostrar todas las raíces encontradas de bisección (si las hay)
+        elif getattr(self, "found_roots", None):
             for idx, res in self.found_roots:
                 try:
                     rx = res.root
@@ -489,7 +746,7 @@ class BisectionApp(QMainWindow):
             root_y = self.compiled_function(root_x)
             axis.scatter([root_x], [root_y], color="#d62828", s=55, zorder=5, label=f"Raiz aprox: {root_x:.6f}")
 
-        axis.set_title("Funcion y raiz aproximada por biseccion")
+        axis.set_title(f"Funcion y raiz aproximada por {method_name}")
         axis.set_xlabel("x")
         axis.set_ylabel("f(x)")
         axis.grid(alpha=0.25)
