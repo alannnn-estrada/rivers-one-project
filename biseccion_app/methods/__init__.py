@@ -15,6 +15,7 @@ def get_available_methods() -> List[Tuple[str, str, str]]:
     - 'biseccion': comportamiento clásico (primera raíz encontrada)
     - 'buscar_todas': tabulación que devuelve todas las raíces encontradas
     - 'aprox_sucesivas': método de aproximaciones sucesivas
+    - 'newton_raphson': método de Newton-Raphson
     """
     return [
         ("biseccion", "Bisección (primera raíz)", "Encuentra la primera raíz con bisección"),
@@ -23,5 +24,10 @@ def get_available_methods() -> List[Tuple[str, str, str]]:
             "aprox_sucesivas",
             "Aproximaciones sucesivas",
             "Tabula desde el numero propuesto y aplica aproximaciones sucesivas por intervalo",
+        ),
+        (
+            "newton_raphson",
+            "Newton-Raphson",
+            "Método de Newton-Raphson usando derivada",
         ),
     ]

@@ -55,11 +55,15 @@ from biseccion_app.math_engine import (
     SignChangeSearchResult,
     MultipleSignChangeSearchResult,
     SuccessiveApproxResult,
+    NewtonRaphsonResult,
     compile_function,
+    compile_derivative,
     find_first_sign_change,
     find_all_sign_changes,
     run_bisection,
     run_successive_approximations,
+    run_newton_raphson,
+    get_derivative_expression,
 )
 from biseccion_app.methods import get_available_methods
 
@@ -84,7 +88,7 @@ def _get_runtime_signature() -> str:
             capture_output=True,
             text=True,
         ).stdout.strip()
-        git_part = f"Git {commit_id} | No.Commit: {commit_count}"
+        git_part = f"Git {commit_id} | commits: {commit_count}"
     except Exception:
         git_part = "Git no disponible"
 
@@ -98,16 +102,17 @@ class BisectionApp(QMainWindow):
         self.resize(1080, 680)
 
         self.compiled_function = None
+        self.compiled_derivative = None
         self.formula_text = ""
         self.sign_search_result: Optional[SignChangeSearchResult | MultipleSignChangeSearchResult] = None
         self.plot_span = 5.0
         self.result: Optional[BisectionResult] = None
         self.successive_result: Optional[SuccessiveApproxResult] = None
+        self.newton_raphson_result: Optional[NewtonRaphsonResult] = None
         self.found_roots: list[Tuple[int, BisectionResult]] = []
         self._plot_window: Optional[QWidget] = None
 
         self._build_ui()
-        self._build_runtime_footer()
 
     def _build_ui(self) -> None:
         central = QWidget()
@@ -127,6 +132,8 @@ class BisectionApp(QMainWindow):
         self.tab_max_edit = QLineEdit("100")
         self.error_edit = QLineEdit("0.001")
         self.max_iter_edit = QLineEdit("100")
+        self.derivative_edit = QLineEdit("")
+        self.derivative_edit.setReadOnly(True)
 
         left_layout.addWidget(QLabel("Formula f(x):"))
         left_layout.addWidget(self.formula_edit)
@@ -139,6 +146,9 @@ class BisectionApp(QMainWindow):
         right_layout.addWidget(self.error_edit)
         right_layout.addWidget(QLabel("Max iteraciones:"))
         right_layout.addWidget(self.max_iter_edit)
+        self.derivative_label = QLabel("Derivada f'(x):")
+        right_layout.addWidget(self.derivative_label)
+        right_layout.addWidget(self.derivative_edit)
 
         input_layout.addLayout(left_layout)
         input_layout.addLayout(right_layout)
@@ -180,10 +190,11 @@ class BisectionApp(QMainWindow):
         self.status_label.setStyleSheet("color: #1c3d5a;")
         main_layout.addWidget(self.status_label)
 
+
         # Tabulación (cambio de signo)
-        sign_group = QGroupBox("Tabulacion para encontrar cambio de signo")
+        self.sign_group = QGroupBox("Tabulacion para encontrar cambio de signo")
         sign_layout = QVBoxLayout()
-        sign_group.setLayout(sign_layout)
+        self.sign_group.setLayout(sign_layout)
 
         # filtro para mostrar solo cambios/no cambios
         self.sign_filter_combo = QComboBox()
@@ -202,7 +213,7 @@ class BisectionApp(QMainWindow):
 
         self.sign_table.itemClicked.connect(self._on_sign_item_clicked)
         sign_layout.addWidget(self.sign_table)
-        main_layout.addWidget(sign_group)
+        main_layout.addWidget(self.sign_group)
 
         # Tabla del método
         table_group = QGroupBox("Tabla del metodo")
@@ -217,12 +228,17 @@ class BisectionApp(QMainWindow):
 
         table_layout.addWidget(self.table)
         main_layout.addWidget(table_group)
+        self.derivative_label.hide()
+        self.derivative_edit.hide()
 
-    def _build_runtime_footer(self) -> None:
+        # Footer técnico siempre visible en la esquina inferior derecha.
+        footer_layout = QHBoxLayout()
+        footer_layout.addStretch()
         footer_label = QLabel(_get_runtime_signature())
         footer_label.setStyleSheet("color: #6b7280; font-size: 11px;")
         footer_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.statusBar().addPermanentWidget(footer_label, 1)
+        footer_layout.addWidget(footer_label)
+        main_layout.addLayout(footer_layout)
 
     def calculate(self) -> None:
         try:
@@ -340,6 +356,37 @@ class BisectionApp(QMainWindow):
                 f"Aproximaciones sucesivas: maximo de iteraciones alcanzado, ultima aprox {result.root:.10f}, m={result.m:.6f}."
             )
 
+    def _render_newton_raphson_result(self, result: NewtonRaphsonResult) -> None:
+        self.table.setColumnCount(6)
+        self.table.setHorizontalHeaderLabels(["n", "x0", "f(x0)", "f'(x0)", "g(x0)", "Error abs"])
+        self.table.setRowCount(0)
+
+        for rec in result.records:
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            values = [
+                str(rec.iteration),
+                f"{rec.xn:.6f}",
+                f"{rec.fxn:.6f}",
+                f"{rec.fpxn:.6f}",
+                f"{rec.gxn:.6f}",
+                f"{rec.error_abs:.6f}",
+            ]
+            for col, val in enumerate(values):
+                item = QTableWidgetItem(val)
+                item.setTextAlignment(Qt.AlignCenter)
+                self.table.setItem(row, col, item)
+
+        last_error = result.records[-1].error_abs if result.records else None
+        if result.met_tolerance and last_error is not None:
+            self.status_label.setText(
+                f"Newton-Raphson: raiz aprox {result.root:.10f}, Error absoluto final {last_error:.6f}."
+            )
+        else:
+            self.status_label.setText(
+                f"Newton-Raphson: maximo de iteraciones alcanzado, ultima aprox {result.root:.10f}."
+            )
+
     def _format_x(self, value: float) -> str:
         text = f"{value:.6f}".rstrip("0").rstrip(".")
         return text if text else "0"
@@ -392,8 +439,17 @@ class BisectionApp(QMainWindow):
         self._render_sign_tabulation(sr)
 
     def _on_method_changed(self) -> None:
-        """Actualiza el método activo para evitar ejecuciones con estado previo."""
+        """Actualiza el método activo y oculta/muestra la tabulación de cambio de signo según el método."""
         self.selected_method_id = self.method_combo.currentData()
+        # Ocultar tabulación si es Newton-Raphson
+        if self.selected_method_id == "newton_raphson":
+            self.sign_group.hide()
+            self.derivative_label.show()
+            self.derivative_edit.show()
+        else:
+            self.sign_group.show()
+            self.derivative_label.hide()
+            self.derivative_edit.hide()
 
     def _on_sign_item_clicked(self, item: QTreeWidgetItem, column: int) -> None:
         """Maneja el clic en una fila de la tabulación. Si tiene cambio de signo,
@@ -572,6 +628,8 @@ class BisectionApp(QMainWindow):
         Para preservar la interfaz previa, si el método seleccionado es
         `biseccion` se delega a `calculate()` (comportamiento original).
         Para `buscar_todas` se delega a `calculate_all()`.
+        Para `aprox_sucesivas` se delega a `calculate_successive_approximations()`.
+        Para `newton_raphson` se delega a `calculate_newton_raphson()`.
         """
         current_id = self.method_combo.currentData()
         self.selected_method_id = current_id
@@ -581,6 +639,8 @@ class BisectionApp(QMainWindow):
             self.calculate_all()
         elif current_id == "aprox_sucesivas":
             self.calculate_successive_approximations()
+        elif current_id == "newton_raphson":
+            self.calculate_newton_raphson()
         else:
             QMessageBox.warning(self, "Metodo desconocido", "El metodo seleccionado no está implementado.")
 
@@ -692,18 +752,83 @@ class BisectionApp(QMainWindow):
             self.status_label.setText("Error en el calculo.")
             QMessageBox.critical(self, "Entrada invalida", str(exc))
 
+    def calculate_newton_raphson(self) -> None:
+        """Ejecuta el método de Newton-Raphson."""
+        try:
+            # Preparar tabla de Newton-Raphson para evitar mostrar columnas previas.
+            self.table.setColumnCount(6)
+            self.table.setHorizontalHeaderLabels(["n", "x0", "f(x0)", "f'(x0)", "g(x0)", "Error abs"])
+            self.table.setRowCount(0)
+
+            formula = self.formula_edit.text().strip()
+            x0 = float(self.proposed_edit.text())
+            error_abs = float(self.error_edit.text())
+            max_iter = int(self.max_iter_edit.text())
+
+            if not formula:
+                raise ValueError("Debe ingresar una formula en terminos de x.")
+            if error_abs <= 0:
+                raise ValueError("La tolerancia (E_abs) debe ser mayor que 0.")
+            if max_iter <= 0:
+                raise ValueError("Las iteraciones maximas deben ser mayores que 0.")
+
+            self.compiled_function = compile_function(formula)
+            self.compiled_derivative = compile_derivative(formula)
+            self.derivative_edit.setText(get_derivative_expression(formula))
+            self.formula_text = formula
+
+            # Ejecutar Newton-Raphson
+            res = run_newton_raphson(
+                self.compiled_function,
+                self.compiled_derivative,
+                x0,
+                error_abs,
+                max_iter,
+            )
+
+            self.newton_raphson_result = res
+            self.result = None
+            self.successive_result = None
+            self.found_roots = []
+            self.plot_span = max(5.0, abs(x0)) * 1.5
+
+            # Mostrar la tabla
+            self._render_newton_raphson_result(res)
+            self.plot_btn.setEnabled(True)
+
+            # Mostrar desarrollo del primer paso
+            if res.records:
+                first = res.records[0]
+                dev_text = (
+                    "Desarrollo (Newton-Raphson)\n\n"
+                    f"x0 = {first.xn:.6f}\n"
+                    f"f(x0) = {first.fxn:.6f}\n"
+                    f"f'(x0) = {first.fpxn:.6f}\n"
+                    f"g(x0) = x0 - f(x0)/f'(x0) = {first.xn:.6f} - ({first.fxn:.6f})/({first.fpxn:.6f}) = {first.gxn:.6f}\n"
+                    f"Error absoluto = |g(x0) - x0| = |{first.gxn:.6f} - {first.xn:.6f}| = {first.error_abs:.6f}"
+                )
+                QMessageBox.information(self, "Desarrollo del metodo", dev_text)
+
+        except (ValueError, FormulaError) as exc:
+            self.derivative_edit.clear()
+            self.plot_btn.setEnabled(False)
+            self.status_label.setText("Error en el calculo.")
+            QMessageBox.critical(self, "Entrada invalida", str(exc))
+
     def clear_table(self, reset_status: bool = True) -> None:
         self.table.setRowCount(0)
         self.sign_table.clear()
+        self.derivative_edit.clear()
         if reset_status:
             self.status_label.setText("Listo.")
             self.result = None
             self.successive_result = None
+            self.newton_raphson_result = None
             self.sign_search_result = None
             self.plot_btn.setEnabled(False)
 
     def show_plot(self) -> None:
-        if self.compiled_function is None or (self.result is None and self.successive_result is None):
+        if self.compiled_function is None or (self.result is None and self.successive_result is None and self.newton_raphson_result is None):
             QMessageBox.warning(self, "Sin datos", "Primero realice un calculo con algun metodo.")
             return
         x_values = np.linspace(-self.plot_span, self.plot_span, 1200)
@@ -723,8 +848,17 @@ class BisectionApp(QMainWindow):
 
         method_name = "biseccion"
         
+        # Mostrar raíz de Newton-Raphson si está disponible
+        if self.newton_raphson_result is not None:
+            try:
+                rx = self.newton_raphson_result.root
+                ry = self.compiled_function(rx)
+                axis.scatter([rx], [ry], s=55, zorder=5, color="#d62828", label=f"Raiz aprox: {rx:.6f}")
+                method_name = "Newton-Raphson"
+            except Exception:
+                pass
         # Mostrar raíz de aproximaciones sucesivas si está disponible
-        if self.successive_result is not None:
+        elif self.successive_result is not None:
             try:
                 rx = self.successive_result.root
                 ry = self.compiled_function(rx)

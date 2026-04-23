@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Callable, List, Optional, Tuple
 
 import numpy as np
-from sympy import Symbol, lambdify
+from sympy import Symbol, lambdify, diff, sstr
 from sympy.parsing.sympy_parser import (
     convert_xor,
     implicit_multiplication_application,
@@ -78,6 +78,23 @@ class SuccessiveApproxResult:
     m: float
 
 
+@dataclass
+class NewtonRaphsonRecord:
+    iteration: int
+    xn: float
+    fxn: float
+    fpxn: float
+    gxn: float
+    error_abs: float
+
+
+@dataclass
+class NewtonRaphsonResult:
+    records: List[NewtonRaphsonRecord]
+    root: float
+    met_tolerance: bool
+
+
 def compile_function(expression: str) -> Callable[[float], float]:
     """Compila una expresión de usuario en la variable x a una función numérica."""
     x = Symbol("x")
@@ -107,6 +124,54 @@ def compile_function(expression: str) -> Callable[[float], float]:
             raise FormulaError(f"Error evaluando la formula en x={value}: {exc}") from exc
 
     return safe_eval
+
+
+def compile_derivative(expression: str) -> Callable[[float], float]:
+    """Compila la derivada de una expresión en la variable x a una función numérica."""
+    x = Symbol("x")
+
+    # Preparar transformaciones para el parser (p. ej. multiplicación implícita y manejo de '^')
+    transformations = standard_transformations + (
+        implicit_multiplication_application,
+        convert_xor,
+    )
+
+    try:
+        parsed = parse_expr(expression, transformations=transformations)
+        derivative = diff(parsed, x)
+        numeric_fn = lambdify(x, derivative, modules=["numpy"])
+    except Exception as exc:  # pragma: no cover - guardia defensiva al parsear/derivar
+        raise FormulaError(f"No se pudo calcular la derivada de la formula: {exc}") from exc
+
+    def safe_eval(value: float) -> float:
+        try:
+            result = numeric_fn(value)
+            value_as_float = float(result)
+            if not np.isfinite(value_as_float):
+                raise FormulaError("La derivada devuelve un valor no finito.")
+            return value_as_float
+        except FormulaError:
+            raise
+        except Exception as exc:  # pragma: no cover - guardia defensiva al evaluar
+            raise FormulaError(f"Error evaluando la derivada en x={value}: {exc}") from exc
+
+    return safe_eval
+
+
+def get_derivative_expression(expression: str) -> str:
+    """Devuelve la derivada simbólica de la expresión como texto."""
+    x = Symbol("x")
+    transformations = standard_transformations + (
+        implicit_multiplication_application,
+        convert_xor,
+    )
+
+    try:
+        parsed = parse_expr(expression, transformations=transformations)
+        derivative = diff(parsed, x)
+        return sstr(derivative)
+    except Exception as exc:  # pragma: no cover - guardia defensiva al parsear/derivar
+        raise FormulaError(f"No se pudo calcular la derivada de la formula: {exc}") from exc
 
 
 def _has_sign_change(f_left: float, f_right: float) -> bool:
@@ -416,4 +481,62 @@ def run_successive_approximations(
         root=records[-1].xn_next,
         met_tolerance=False,
         m=m,
+    )
+
+
+def run_newton_raphson(
+    function: Callable[[float], float],
+    derivative: Callable[[float], float],
+    x0: float,
+    error_tolerance_abs: float,
+    max_iterations: int = 200,
+) -> NewtonRaphsonResult:
+    """Ejecuta el método de Newton-Raphson usando:
+
+    x_(n+1) = x_n - f(x_n) / f'(x_n)
+    
+    Columnas a mostrar: n, x0, f(x0), f'(x0), g(x0), error_abs
+    """
+    if error_tolerance_abs <= 0:
+        raise ValueError("La tolerancia absoluta debe ser mayor que 0.")
+    if max_iterations <= 0:
+        raise ValueError("El maximo de iteraciones debe ser mayor que 0.")
+
+    records: List[NewtonRaphsonRecord] = []
+    xn = float(x0)
+
+    for iteration in range(1, max_iterations + 1):
+        fxn = function(xn)
+        fpxn = derivative(xn)
+        
+        if fpxn == 0:
+            raise ValueError(f"La derivada es cero en x={xn}. No se puede aplicar Newton-Raphson.")
+
+        gxn = xn - (fxn / fpxn)
+        error_abs = abs(gxn - xn)
+
+        records.append(
+            NewtonRaphsonRecord(
+                iteration=iteration,
+                xn=xn,
+                fxn=fxn,
+                fpxn=fpxn,
+                gxn=gxn,
+                error_abs=error_abs,
+            )
+        )
+
+        if fxn == 0 or error_abs <= error_tolerance_abs:
+            return NewtonRaphsonResult(
+                records=records,
+                root=gxn,
+                met_tolerance=True,
+            )
+
+        xn = gxn
+
+    return NewtonRaphsonResult(
+        records=records,
+        root=records[-1].gxn,
+        met_tolerance=False,
     )
