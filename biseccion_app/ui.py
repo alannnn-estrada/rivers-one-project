@@ -205,7 +205,7 @@ class BisectionApp(QMainWindow):
         self.sign_table = QTreeWidget()
         self.sign_table.setColumnCount(len(tab_columns))
         self.sign_table.setHeaderLabels(list(tab_columns))
-        self.sign_table.header().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.sign_table.header().setSectionResizeMode(QHeaderView.Stretch)
         self.sign_table.header().setStretchLastSection(True)
 
         self.sign_table.itemClicked.connect(self._on_sign_item_clicked)
@@ -220,7 +220,7 @@ class BisectionApp(QMainWindow):
         columns = ("n", "a", "b", "xn", "f(a)", "f(b)", "f(xn)", "Error %")
         self.table = QTableWidget(0, len(columns))
         self.table.setHorizontalHeaderLabels(list(columns))
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.horizontalHeader().setStretchLastSection(True)
 
         table_layout.addWidget(self.table)
@@ -236,6 +236,11 @@ class BisectionApp(QMainWindow):
         footer_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         footer_layout.addWidget(footer_label)
         main_layout.addLayout(footer_layout)
+
+    def _apply_uniform_header_resize(self, header, column_count: int) -> None:
+        header.setStretchLastSection(False)
+        for column in range(column_count):
+            header.setSectionResizeMode(column, QHeaderView.Stretch)
 
     def calculate(self) -> None:
         try:
@@ -284,6 +289,7 @@ class BisectionApp(QMainWindow):
     def _render_result(self, result: BisectionResult) -> None:
         self.table.setColumnCount(8)
         self.table.setHorizontalHeaderLabels(["n", "a", "b", "xn", "f(a)", "f(b)", "f(xn)", "Error %"])
+        self._apply_uniform_header_resize(self.table.horizontalHeader(), self.table.columnCount())
         # limpiar tabla
         self.table.setRowCount(0)
         for rec in result.records:
@@ -325,6 +331,7 @@ class BisectionApp(QMainWindow):
     def _render_successive_result(self, result: SuccessiveApproxResult) -> None:
         self.table.setColumnCount(5)
         self.table.setHorizontalHeaderLabels(["n", "x0", "f(x0)", "g(x0)", "Error %"])
+        self._apply_uniform_header_resize(self.table.horizontalHeader(), self.table.columnCount())
         self.table.setRowCount(0)
 
         for rec in result.records:
@@ -356,6 +363,7 @@ class BisectionApp(QMainWindow):
     def _render_newton_raphson_result(self, result: NewtonRaphsonResult) -> None:
         self.table.setColumnCount(6)
         self.table.setHorizontalHeaderLabels(["n", "x0", "f(x0)", "f'(x0)", "g(x0)", "Error abs"])
+        self._apply_uniform_header_resize(self.table.horizontalHeader(), self.table.columnCount())
         self.table.setRowCount(0)
 
         for rec in result.records:
