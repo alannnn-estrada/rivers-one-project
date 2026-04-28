@@ -159,7 +159,7 @@ def compile_derivative(expression: str) -> Callable[[float], float]:
 
 
 def get_derivative_expression(expression: str) -> str:
-    """Devuelve la derivada simbólica de la expresión como texto."""
+    """Devuelve la derivada simbólica como texto legible para la interfaz."""
     x = Symbol("x")
     transformations = standard_transformations + (
         implicit_multiplication_application,
@@ -169,7 +169,7 @@ def get_derivative_expression(expression: str) -> str:
     try:
         parsed = parse_expr(expression, transformations=transformations)
         derivative = diff(parsed, x)
-        return sstr(derivative)
+        return sstr(derivative).replace("**", "^").replace("*", "")
     except Exception as exc:  # pragma: no cover - guardia defensiva al parsear/derivar
         raise FormulaError(f"No se pudo calcular la derivada de la formula: {exc}") from exc
 
