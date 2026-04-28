@@ -12,14 +12,10 @@ from pathlib import Path
 from typing import Optional, Tuple
 import re
 
-import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.figure import Figure
 
-# Intento de importación de Qt + FigureCanvas en un único bloque
+# Intento de importación de Qt en un único bloque
 try:
-    from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-
     from PySide6.QtWidgets import (
         QApplication,
         QMainWindow,
@@ -65,6 +61,7 @@ from biseccion_app.math_engine import (
     run_newton_raphson,
     get_derivative_expression,
 )
+from biseccion_app.plot_window import FunctionPlotWindow
 from biseccion_app.methods import get_available_methods
 
 
@@ -831,29 +828,14 @@ class BisectionApp(QMainWindow):
         if self.compiled_function is None or (self.result is None and self.successive_result is None and self.newton_raphson_result is None):
             QMessageBox.warning(self, "Sin datos", "Primero realice un calculo con algun metodo.")
             return
-        x_values = np.linspace(-self.plot_span, self.plot_span, 1200)
-        y_values = np.array([self.compiled_function(x) for x in x_values])
-
-        plot_window = QWidget()
-        plot_window.setWindowTitle("Grafica de la funcion")
-        plot_window.resize(900, 580)
-        layout = QVBoxLayout(plot_window)
-
-        figure = Figure(figsize=(8.5, 5.2), dpi=100)
-        axis = figure.add_subplot(111)
-
-        axis.plot(x_values, y_values, color="#2d6a9f", linewidth=2.0, label="f(x)")
-        axis.axhline(0, color="#4f4f4f", linewidth=1.2)
-        axis.axvline(0, color="#4f4f4f", linewidth=1.0, linestyle="--", alpha=0.75)
-
         method_name = "biseccion"
-        
+        root_markers: list[tuple[float, str, str]] = []
+
         # Mostrar raíz de Newton-Raphson si está disponible
         if self.newton_raphson_result is not None:
             try:
                 rx = self.newton_raphson_result.root
-                ry = self.compiled_function(rx)
-                axis.scatter([rx], [ry], s=55, zorder=5, color="#d62828", label=f"Raiz aprox: {rx:.6f}")
+                root_markers.append((rx, f"Raiz aprox: {rx:.6f}", "#d62828"))
                 method_name = "Newton-Raphson"
             except Exception:
                 pass
@@ -861,8 +843,7 @@ class BisectionApp(QMainWindow):
         elif self.successive_result is not None:
             try:
                 rx = self.successive_result.root
-                ry = self.compiled_function(rx)
-                axis.scatter([rx], [ry], s=55, zorder=5, color="#d62828", label=f"Raiz aprox: {rx:.6f}")
+                root_markers.append((rx, f"Raiz aprox: {rx:.6f}", "#d62828"))
                 method_name = "aproximaciones sucesivas"
             except Exception:
                 pass
@@ -871,32 +852,24 @@ class BisectionApp(QMainWindow):
             for idx, res in self.found_roots:
                 try:
                     rx = res.root
-                    ry = self.compiled_function(rx)
-                    axis.scatter([rx], [ry], s=55, zorder=5, label=f"Raiz {idx}: {rx:.6f}")
+                    root_markers.append((rx, f"Raiz {idx}: {rx:.6f}", "#2d6a9f"))
                 except Exception:
                     continue
         else:
             root_x = self.result.root
-            root_y = self.compiled_function(root_x)
-            axis.scatter([root_x], [root_y], color="#d62828", s=55, zorder=5, label=f"Raiz aprox: {root_x:.6f}")
-
-        axis.set_title(f"Funcion y raiz aproximada por {method_name}")
-        axis.set_xlabel("x")
-        axis.set_ylabel("f(x)")
-        axis.grid(alpha=0.25)
-        axis.legend(loc="best")
-
-        canvas = FigureCanvas(figure)
-        layout.addWidget(canvas)
+            root_markers.append((root_x, f"Raiz aprox: {root_x:.6f}", "#d62828"))
 
         # Mantener referencia a la ventana para evitar que el GC la cierre
-        self._plot_window = plot_window
-
-        close_btn = QPushButton("Cerrar")
-        close_btn.clicked.connect(plot_window.close)
-        layout.addWidget(close_btn, alignment=Qt.AlignRight)
-
-        plot_window.show()
+        self._plot_window = FunctionPlotWindow(
+            self.compiled_function,
+            self.plot_span,
+            root_markers,
+            method_name,
+            None,
+        )
+        self._plot_window.show()
+        self._plot_window.raise_()
+        self._plot_window.activateWindow()
 
 
 def run_app() -> None:
