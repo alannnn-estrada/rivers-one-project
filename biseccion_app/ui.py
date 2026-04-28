@@ -63,6 +63,7 @@ from biseccion_app.math_engine import (
 )
 from biseccion_app.plot_window import FunctionPlotWindow
 from biseccion_app.methods import get_available_methods
+from biseccion_app.visuals import get_dark_stylesheet, latex_to_pixmap
 
 
 def _get_runtime_signature() -> str:
@@ -85,7 +86,7 @@ def _get_runtime_signature() -> str:
             capture_output=True,
             text=True,
         ).stdout.strip()
-        git_part = f"Git {commit_id} | commits: {commit_count}"
+        git_part = f"Git {commit_id[:5]} | commits: {commit_count}"
     except Exception:
         git_part = "Git no disponible"
 
@@ -96,7 +97,8 @@ class BisectionApp(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Metodo de biseccion")
-        self.resize(1080, 680)
+        self.resize(1080, 720)
+        self.setStyleSheet(get_dark_stylesheet())
 
         self.compiled_function = None
         self.compiled_derivative = None
@@ -123,14 +125,13 @@ class BisectionApp(QMainWindow):
 
         left_layout = QVBoxLayout()
         right_layout = QVBoxLayout()
+        right_layout.setSpacing(4)
 
         self.formula_edit = QLineEdit("x^3 + 2x^2 - 9")
         self.proposed_edit = QLineEdit("0")
         self.tab_max_edit = QLineEdit("100")
         self.error_edit = QLineEdit("0.001")
         self.max_iter_edit = QLineEdit("100")
-        self.derivative_edit = QLineEdit("")
-        self.derivative_edit.setReadOnly(True)
 
         left_layout.addWidget(QLabel("Formula f(x):"))
         left_layout.addWidget(self.formula_edit)
@@ -145,7 +146,16 @@ class BisectionApp(QMainWindow):
         right_layout.addWidget(self.max_iter_edit)
         self.derivative_label = QLabel("Derivada f'(x):")
         right_layout.addWidget(self.derivative_label)
-        right_layout.addWidget(self.derivative_edit)
+        
+        # Panel para mostrar derivada con LaTeX
+        self.derivative_display_label = QLabel()
+        self.derivative_display_label.setStyleSheet("background: #111827; padding: 4px; border-radius: 4px;")
+        self.derivative_display_label.setAlignment(Qt.AlignCenter)
+        self.derivative_display_label.setMinimumHeight(28)
+        self.derivative_display_label.setMaximumHeight(34)
+        right_layout.addWidget(self.derivative_display_label)
+        self.derivative_label.hide()
+        self.derivative_display_label.hide()
 
         input_layout.addLayout(left_layout)
         input_layout.addLayout(right_layout)
@@ -184,8 +194,21 @@ class BisectionApp(QMainWindow):
 
         # Estado
         self.status_label = QLabel("Listo.")
-        self.status_label.setStyleSheet("color: #1c3d5a;")
+        self.status_label.setStyleSheet("color: #60a5fa; font-size: 11px;")
         main_layout.addWidget(self.status_label)
+
+        # Mostrador de fórmula con LaTeX
+        formula_display_group = QGroupBox("Formula ingresada")
+        formula_display_layout = QVBoxLayout(formula_display_group)
+        formula_display_layout.setContentsMargins(8, 4, 8, 4)
+        formula_display_layout.setSpacing(4)
+        self.formula_display_label = QLabel()
+        self.formula_display_label.setStyleSheet("background: #111827; padding: 4px; border-radius: 4px;")
+        self.formula_display_label.setAlignment(Qt.AlignCenter)
+        self.formula_display_label.setMinimumHeight(40)
+        self.formula_display_label.setMaximumHeight(48)
+        formula_display_layout.addWidget(self.formula_display_label)
+        main_layout.addWidget(formula_display_group)
 
 
         # Tabulación (cambio de signo)
@@ -226,21 +249,15 @@ class BisectionApp(QMainWindow):
         table_layout.addWidget(self.table)
         main_layout.addWidget(table_group)
         self.derivative_label.hide()
-        self.derivative_edit.hide()
 
         # Footer técnico siempre visible en la esquina inferior derecha.
         footer_layout = QHBoxLayout()
         footer_layout.addStretch()
         footer_label = QLabel(_get_runtime_signature())
-        footer_label.setStyleSheet("color: #6b7280; font-size: 11px;")
+        footer_label.setStyleSheet("color: #64748b; font-size: 10px;")
         footer_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         footer_layout.addWidget(footer_label)
         main_layout.addLayout(footer_layout)
-
-    def _apply_uniform_header_resize(self, header, column_count: int) -> None:
-        header.setStretchLastSection(False)
-        for column in range(column_count):
-            header.setSectionResizeMode(column, QHeaderView.Stretch)
 
     def calculate(self) -> None:
         try:
@@ -262,6 +279,7 @@ class BisectionApp(QMainWindow):
 
             self.compiled_function = compile_function(formula)
             self.formula_text = formula
+            self._update_formula_display(formula)
             self.sign_search_result = find_first_sign_change(
                 self.compiled_function, proposed_number, max_tabulations
             )
@@ -279,6 +297,7 @@ class BisectionApp(QMainWindow):
             self.plot_span = max(5.0, abs(a0), abs(b0)) * 1.5
 
             self._render_result(self.result)
+            self._update_formula_display(formula)
             self.plot_btn.setEnabled(True)
 
         except (ValueError, FormulaError) as exc:
@@ -289,7 +308,6 @@ class BisectionApp(QMainWindow):
     def _render_result(self, result: BisectionResult) -> None:
         self.table.setColumnCount(8)
         self.table.setHorizontalHeaderLabels(["n", "a", "b", "xn", "f(a)", "f(b)", "f(xn)", "Error %"])
-        self._apply_uniform_header_resize(self.table.horizontalHeader(), self.table.columnCount())
         # limpiar tabla
         self.table.setRowCount(0)
         for rec in result.records:
@@ -331,7 +349,6 @@ class BisectionApp(QMainWindow):
     def _render_successive_result(self, result: SuccessiveApproxResult) -> None:
         self.table.setColumnCount(5)
         self.table.setHorizontalHeaderLabels(["n", "x0", "f(x0)", "g(x0)", "Error %"])
-        self._apply_uniform_header_resize(self.table.horizontalHeader(), self.table.columnCount())
         self.table.setRowCount(0)
 
         for rec in result.records:
@@ -363,7 +380,6 @@ class BisectionApp(QMainWindow):
     def _render_newton_raphson_result(self, result: NewtonRaphsonResult) -> None:
         self.table.setColumnCount(6)
         self.table.setHorizontalHeaderLabels(["n", "x0", "f(x0)", "f'(x0)", "g(x0)", "Error abs"])
-        self._apply_uniform_header_resize(self.table.horizontalHeader(), self.table.columnCount())
         self.table.setRowCount(0)
 
         for rec in result.records:
@@ -395,6 +411,22 @@ class BisectionApp(QMainWindow):
     def _format_x(self, value: float) -> str:
         text = f"{value:.6f}".rstrip("0").rstrip(".")
         return text if text else "0"
+
+    def _update_formula_display(self, formula: str) -> None:
+        """Muestra la fórmula ingresada usando LaTeX si es posible."""
+        pixmap = latex_to_pixmap(formula, fontsize=13, dpi=120)
+        if pixmap is not None:
+            self.formula_display_label.setPixmap(pixmap)
+        else:
+            self.formula_display_label.setText(f"f(x) = {formula}")
+
+    def _update_derivative_display(self, derivative_expr: str) -> None:
+        """Muestra la derivada usando LaTeX si es posible."""
+        pixmap = latex_to_pixmap(derivative_expr, fontsize=12, dpi=120, label="f'(x) =")
+        if pixmap is not None:
+            self.derivative_display_label.setPixmap(pixmap)
+        else:
+            self.derivative_display_label.setText(f"f'(x) = {derivative_expr}")
 
     def _replace_x_in_formula(self, x_value: float) -> str:
         replacement = f"({self._format_x(x_value)})"
@@ -450,11 +482,11 @@ class BisectionApp(QMainWindow):
         if self.selected_method_id == "newton_raphson":
             self.sign_group.hide()
             self.derivative_label.show()
-            self.derivative_edit.show()
+            self.derivative_display_label.show()
         else:
             self.sign_group.show()
             self.derivative_label.hide()
-            self.derivative_edit.hide()
+            self.derivative_display_label.hide()
 
     def _on_sign_item_clicked(self, item: QTreeWidgetItem, column: int) -> None:
         """Maneja el clic en una fila de la tabulación. Si tiene cambio de signo,
@@ -559,6 +591,7 @@ class BisectionApp(QMainWindow):
 
             self.compiled_function = compile_function(formula)
             self.formula_text = formula
+            self._update_formula_display(formula)
 
             multi: MultipleSignChangeSearchResult = find_all_sign_changes(
                 self.compiled_function, proposed_number, max_tabulations
@@ -674,6 +707,7 @@ class BisectionApp(QMainWindow):
 
             self.compiled_function = compile_function(formula)
             self.formula_text = formula
+            self._update_formula_display(formula)
 
             # Buscar todos los intervalos desde el número propuesto.
             multi = find_all_sign_changes(self.compiled_function, proposed_number, max_tabulations)
@@ -779,8 +813,10 @@ class BisectionApp(QMainWindow):
 
             self.compiled_function = compile_function(formula)
             self.compiled_derivative = compile_derivative(formula)
-            self.derivative_edit.setText(get_derivative_expression(formula))
+            derivative_expr = get_derivative_expression(formula)
+            self._update_derivative_display(derivative_expr)
             self.formula_text = formula
+            self._update_formula_display(formula)
 
             # Ejecutar Newton-Raphson
             res = run_newton_raphson(
@@ -815,7 +851,6 @@ class BisectionApp(QMainWindow):
                 QMessageBox.information(self, "Desarrollo del metodo", dev_text)
 
         except (ValueError, FormulaError) as exc:
-            self.derivative_edit.clear()
             self.plot_btn.setEnabled(False)
             self.status_label.setText("Error en el calculo.")
             QMessageBox.critical(self, "Entrada invalida", str(exc))
@@ -823,7 +858,8 @@ class BisectionApp(QMainWindow):
     def clear_table(self, reset_status: bool = True) -> None:
         self.table.setRowCount(0)
         self.sign_table.clear()
-        self.derivative_edit.clear()
+        self.derivative_display_label.clear()
+        self.formula_display_label.clear()
         if reset_status:
             self.status_label.setText("Listo.")
             self.result = None
